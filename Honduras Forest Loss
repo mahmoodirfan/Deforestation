@@ -1,0 +1,213 @@
+import ee
+import geemap
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib_scalebar.scalebar import ScaleBar
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.gridspec as gridspec
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+# Initialize Earth Engine
+try:
+    ee.Initialize()
+except Exception as e:
+    ee.Authenticate()
+    ee.Initialize()
+
+# Country setup
+country_name = 'Honduras'
+country_fc = ee.FeatureCollection("FAO/GAUL/2015/level0") \
+    .filter(ee.Filter.eq('ADM0_NAME', country_name))
+honduras = country_fc.geometry()
+
+# Time periods
+start_year_1, end_year_1 = 2015, 2016
+start_year_2, end_year_2 = 2022, 2023
+
+# Use a lower resolution to avoid memory errors
+scale = 1000  # meters
+
+# Get Landsat composite with simplified processing
+def get_landsat_composite(start_year, end_year):
+    col = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2') \
+        .filterBounds(honduras) \
+        .filterDate(f'{start_year}-01-01', f'{end_year}-12-31') \
+        .filter(ee.Filter.lt('CLOUD_COVER', 20))
+    
+    def scale(image):
+        # Simple cloud masking
+        qa = image.select('QA_PIXEL')
+        cloud_mask = qa.bitwiseAnd(1 << 3).eq(0)
+        
+        # Scale the optical bands only
+        optical = image.select('SR_B.').multiply(0.0000275).add(-0.2)
+        
+        return image.addBands(optical, None, True).updateMask(cloud_mask)
+    
+    col = col.map(scale)
+    return col.median().clip(honduras)
+
+# NDVI function
+def add_ndvi(image):
+    ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
+    return image.addBands(ndvi)
+
+# Get NDVI composites
+early = add_ndvi(get_landsat_composite(start_year_1, end_year_1))
+recent = add_ndvi(get_landsat_composite(start_year_2, end_year_2))
+
+# Calculate NDVI change and forest loss
+ndvi_diff = recent.select('NDVI').subtract(early.select('NDVI')).rename('NDVI_Change')
+forest_loss = ndvi_diff.lt(-0.15).rename('Forest_Loss')
+
+# Visualize everything in Earth Engine before downloading
+# This reduces memory usage by pre-rendering
+
+# True color composite
+true_color_recent = recent.select(['SR_B4', 'SR_B3', 'SR_B2'])
+true_color_vis = {'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 'min': 0, 'max': 0.3, 'gamma': 1.4}
+
+# Forest loss visualization
+forest_loss_vis = {'min': 0, 'max': 1, 'palette': ['000000', 'FF0000']}
+
+# NDVI difference visualization
+ndvi_diff_vis = {
+    'min': -0.5, 
+    'max': 0.5, 
+    'palette': ['8B0000', 'FF0000', 'FFFFFF', '90EE90', '006400']
+}
+
+# Create a combined visualization - true color with forest loss overlay
+combined_vis = true_color_recent.visualize(**true_color_vis)
+forest_vis = forest_loss.visualize(**forest_loss_vis)
+
+# Create a mask for the forest loss to make black areas transparent
+forest_mask = forest_loss.eq(1)
+forest_vis_masked = forest_vis.updateMask(forest_mask)
+
+# Blend the true color and forest loss
+combined_image = ee.ImageCollection([combined_vis, forest_vis_masked]).mosaic()
+
+# Download the pre-rendered images
+combined_np = geemap.ee_to_numpy(combined_image, region=honduras, scale=scale)
+ndvi_diff_np = geemap.ee_to_numpy(ndvi_diff.visualize(**ndvi_diff_vis), region=honduras, scale=scale)
+
+# Create a land mask based on the combined image
+land_mask = np.sum(combined_np, axis=2) > 0
+
+# Create a mask for forest loss (red pixels in the combined image)
+forest_loss_mask = (combined_np[:,:,0] > 0.8) & (combined_np[:,:,1] < 0.3) & (combined_np[:,:,2] < 0.3) & land_mask
+
+# Calculate approximate forest loss percentage
+loss_pixels = np.sum(forest_loss_mask)
+total_pixels = np.sum(land_mask)
+loss_percentage = (loss_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+
+# Create the figure with an improved layout
+fig = plt.figure(figsize=(15, 10), facecolor='white')
+gs = gridspec.GridSpec(2, 2, height_ratios=[4, 1], width_ratios=[3, 1])
+
+# Main map
+ax_main = fig.add_subplot(gs[0, 0])
+ax_main.imshow(combined_np)
+ax_main.axis('off')
+
+# Add a border around the figure
+for spine in ax_main.spines.values():
+    spine.set_visible(True)
+    spine.set_color('black')
+    spine.set_linewidth(1.5)
+
+# NDVI change subplot
+ax_ndvi_change = fig.add_subplot(gs[0, 1])
+ax_ndvi_change.imshow(ndvi_diff_np)
+ax_ndvi_change.set_title('NDVI Change', fontsize=12)
+ax_ndvi_change.axis('off')
+
+# Statistics panel
+ax_stats = fig.add_subplot(gs[1, 0])
+ax_stats.axis('off')
+stats_text = (
+    f"Forest Loss Analysis: Honduras\n"
+    f"--------------------------------\n"
+    f"Time Period: {start_year_1}-{end_year_1} to {start_year_2}-{end_year_2}\n"
+    f"Forest Loss: {loss_percentage:.1f}% of land area\n"
+    f"Forest Loss Definition: NDVI decrease > 0.15\n"
+    f"Analysis Resolution: {scale}m\n"
+    f"\nSource: Landsat 8 OLI/TIRS C2 L2 data | Analysis: NDVI change detection"
+)
+ax_stats.text(0.05, 0.85, stats_text, va='top', fontsize=10, linespacing=1.5)
+
+# Create legend for main map
+legend_ax = fig.add_subplot(gs[1, 1])
+legend_ax.axis('off')
+legend_items = [
+    mpatches.Patch(color='red', label='Forest Loss'),
+    mpatches.Patch(color='green', label='Vegetation'),
+    mpatches.Patch(color='tan', label='Non-Forest Land'),
+    mpatches.Patch(color='lightblue', label='Water')
+]
+legend = legend_ax.legend(handles=legend_items, loc='center', frameon=True, 
+                         fontsize=11, title='Legend', title_fontsize=12)
+legend.get_frame().set_facecolor('white')
+legend.get_frame().set_alpha(0.8)
+legend.get_frame().set_edgecolor('gray')
+
+# Add scalebar to main map
+scalebar = ScaleBar(scale, 'm', dimension='si-length', color='black', 
+                   box_alpha=0.8, location='lower left')
+ax_main.add_artist(scalebar)
+
+# Add north arrow to main map
+ax_main.annotate('N', xy=(0.95, 0.95), xytext=(0.95, 0.85),
+               arrowprops=dict(facecolor='black', width=2, headwidth=10, headlength=7),
+               ha='center', va='center', fontsize=14, xycoords='axes fraction',
+               bbox=dict(boxstyle="circle,pad=0.3", fc="white", ec="black", lw=1))
+
+# Title and subtitle
+fig.suptitle(f"Forest Loss in {country_name}", fontsize=24, fontweight='bold', y=0.98)
+ax_main.set_title(f"Comparison between {start_year_1}-{end_year_1} and {start_year_2}-{end_year_2}", 
+                  fontsize=14, pad=10)
+
+# Adjust layout
+plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+# Save high resolution
+plt.savefig(f'{country_name}_Forest_Loss_Presentation.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Optional: If you want a simplified version that's even more memory-efficient,
+# you could use this alternative approach that downloads a pre-made visualization directly
+def create_simplified_map():
+    # Create a simplified visualization directly in Earth Engine
+    vis_params = {
+        'bands': ['SR_B4', 'SR_B3', 'SR_B2'],
+        'min': 0,
+        'max': 0.3,
+        'gamma': 1.4
+    }
+    
+    # Add forest loss as a layer in red
+    rgb_vis = recent.visualize(**vis_params)
+    loss_vis = forest_loss.visualize(**{'min': 0, 'max': 1, 'palette': ['000000', 'FF0000']})
+    loss_masked = loss_vis.updateMask(forest_loss)
+    
+    # Combine the layers
+    final_vis = ee.ImageCollection([rgb_vis, loss_masked]).mosaic()
+    
+    # Get the map as a numpy array
+    final_np = geemap.ee_to_numpy(final_vis, region=honduras, scale=1000)
+    
+    # Display a simpler map
+    plt.figure(figsize=(10, 8))
+    plt.imshow(final_np)
+    plt.title(f"Forest Loss in Honduras ({start_year_1}-{end_year_1} to {start_year_2}-{end_year_2})", 
+              fontsize=16, pad=10)
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig('Honduras_Forest_Loss_Simple.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+# Uncomment to run the simplified version if the main version still has memory issues
+# create_simplified_map()
