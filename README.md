@@ -1,19 +1,28 @@
-# Forest Loss in Honduras
+# Deforestation Analysis using Python
 
-This project analyzes forest loss in Honduras by comparing NDVI values between 2015–2016 and 2022–2023 using Landsat 8 imagery.
+This repository is dedicated to analyzing deforestation and vegetation change using Python, satellite data (primarily Landsat), and Earth Engine. It includes scripts for generating high-quality maps, detecting forest loss using NDVI change detection, and producing visual outputs for reports and presentations.
 
-## Methods
+## Project Overview
 
-- Platform: Google Earth Engine
-- Language: Python (geemap, Earth Engine API)
-- Forest loss definition: NDVI decrease > 0.15
-- Resolution: 1000m
+The scripts use Google Earth Engine (GEE) through the Python API (`ee`) and `geemap` to:
 
-## Output
+- Analyze temporal changes in vegetation
+- Detect deforestation events based on NDVI drop
+- Visualize land cover dynamics using remote sensing
+- Generate publication-quality figures using `matplotlib`
 
-![Honduras_Forest_Loss_Presentation](https://github.com/user-attachments/assets/8eb97171-7d7e-48b0-904e-0ba4804ac34b)
+**Key Features:**
+- NDVI-based forest loss detection (threshold: NDVI decrease > 0.15)
+- True-color map with forest loss overlay
+- NDVI difference heatmap
+- Scalebar, north arrow, legend, and stats panel
+- Output: `Honduras_Forest_Loss_Presentation.png`
 
+## 📦 Dependencies
 
-## Script
+To run the scripts, install the following packages:
 
-The `forest_loss_honduras.py` script connects to Earth Engine, processes NDVI change, and generates a high-quality forest loss visualization.
+pip install earthengine-api geemap matplotlib numpy matplotlib-scalebar
+
+![Honduras_Forest_Loss_Presentation](https://github.com/user-attachments/assets/4efca7bb-dd57-41a9-ae11-d2d3baf6cf49)
+
